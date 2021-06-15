@@ -16,6 +16,8 @@ public final class JdbcGsBackup {
                     "[-d database] [-U user] [-P password] [-f filename] [-o (schema only)] " +
                     "[-s schema[,schema...]] [-n schema[,schema...]] [-b batchsize]";
 
+    public static boolean isRestoreData = true;
+
     private static Map<String,String> parseArgs(String[] args) {
         Map<String,String> params = new HashMap<String,String>();
         for (int i = 0; i<args.length; i++) {
@@ -109,6 +111,7 @@ public final class JdbcGsBackup {
                     backup.dump(Arrays.asList(schemas), dataFilter);
                 }
             } else if ("restore".equals(mode)) {
+                isRestoreData = !("true".equals(params.get("nodata")));
                 if (schemas == null) {
                     backup.restoreAll();
                 } else if (toSchemas == null) {

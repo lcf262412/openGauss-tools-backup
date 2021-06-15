@@ -351,14 +351,16 @@ public final class ZipBackup {
             execSqlZipEntry(zipFile, con, tablesSql, isNewSchema);
             timerEnd("tables");
 
-            timerStart("table data");
-            Set<ZipEntry> tableEntries = getSchemaTables(zipFile).get(fromSchemaName);
-            for (ZipEntry tableEntry : tableEntries) {
-                String tableName = parseTable(tableEntry.getName());
-                Table table = tableFactory.getDbBackupObject(con, tableName, toSchema);
-                table.restore(zipFile.getInputStream(tableEntry), con);
+            if (JdbcGsBackup.isRestoreData) {
+                timerStart("table data");
+                Set<ZipEntry> tableEntries = getSchemaTables(zipFile).get(fromSchemaName);
+                for (ZipEntry tableEntry : tableEntries) {
+                    String tableName = parseTable(tableEntry.getName());
+                    Table table = tableFactory.getDbBackupObject(con, tableName, toSchema);
+                    table.restore(zipFile.getInputStream(tableEntry), con);
+                }
+                timerEnd("table data");
             }
-            timerEnd("table data");
 
             timerStart("views");
             ZipEntry viewsSql = zipFile.getEntry(schemaRoot + "views.sql");
