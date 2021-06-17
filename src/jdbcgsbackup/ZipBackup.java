@@ -32,6 +32,7 @@ import java.util.zip.ZipOutputStream;
 
 public final class ZipBackup {
 
+    private static final String defaultDumpFileName = "openGauss_backup.zip";
     private static final String zipRoot = "gs_backup/";
     public static final int DEFAULT_BATCH_SIZE = 10000;
 
@@ -51,7 +52,7 @@ public final class ZipBackup {
     }
 
     public ZipBackup(Map<String,String> params) {
-        this(params.get("filename") == null ? null : new File(params.get("filename")),
+        this(params.get("filename") == null ? new File(defaultDumpFileName) : new File(params.get("filename")),
                 buildJdbcUrl(params));
     }
 
