@@ -63,7 +63,12 @@ public final class JdbcGsBackup {
                 default:
                     throw new RuntimeException("invalid parameter: " + args[i]);
                 }
-            } else throw new RuntimeException("invalid parameters");
+            } else if ("--?".equals(args[i]) || "-help".equals(args[i])) {
+                System.err.println(USAGE);
+                System.exit(1);
+            } else {
+                throw new RuntimeException("invalid parameter: " + args[i]);
+            }
         }
         return params;
     }
