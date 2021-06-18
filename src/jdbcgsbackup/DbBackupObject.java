@@ -5,6 +5,9 @@
 
 package jdbcgsbackup;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 abstract class DbBackupObject {
 
     protected final String name;
@@ -18,11 +21,16 @@ abstract class DbBackupObject {
     }
 
     final String getName() {
-        return name;
+        String regex = "^[0-9a-z_]{1,}$";
+        Matcher ma = Pattern.compile(regex).matcher(name);
+        if (ma.matches()) {
+            return name;
+        }
+        return "\"" + name + "\"";
     }
 
     String getFullname() {
-        return schema.getName() + "." + name;
+        return schema.getName() + "." + getName();
     }
 
     final String getOwner() {

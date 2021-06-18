@@ -514,7 +514,14 @@ public final class ZipBackup {
 
     private static String parseTable(String name) {
         int from = name.indexOf("/tables/") + "/tables/".length();
-        return name.substring(from);
+        return parseDoubleQuotation(name.substring(from));
+    }
+
+    private static String parseDoubleQuotation (String name) {
+        if (name.startsWith("\"") && name.endsWith("\"")) {
+            return name.substring(1, name.length() -1);
+        }
+        return name;
     }
 
     private static String parseSchema(String name) {
