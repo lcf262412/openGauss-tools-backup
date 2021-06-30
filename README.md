@@ -1,39 +1,63 @@
 # openGauss-tools-backup
 
 #### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
 
-#### 软件架构
-软件架构说明
+JdbcGsBackup为一个Java工具，其利用JDBC实现对openGauss数据库中的对象进行备份和恢复。现支持的备份和恢复的数据库对象包括：
 
+- 表（普通表、无日志表、全局临时表、分区表）及表数据
+- 视图和物化视图
+- 序列和序列值
+- 约束
+- 索引
 
-#### 安装教程
+该工具实现的功能与openGauss内置的工具gs_dump、gs_dumpall、gs_restore类似。
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+#### 工具用法
 
-#### 使用说明
+可以用源代码或者Jar包实现对数据库对象的导入和导出，需传入的参数为：
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+```
+-m dump|restore [-h hostname] [-p port] [-t (timing)] [-d database] [-U user] [-P password] [-f filename] [-o (schema only)] [-s schema[,schema...]] [-n schema[,schema...]]
+```
 
-#### 参与贡献
+各参数含义说明如下：
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+- -m 指定模式，取值为dump或者restore，对应导出（备份）或者导入（恢复）操作，必需参数；
+- -h 指定主机名，若不指定，默认为localhost；
+- -p 指定端口号，若不指定，默认为5432；
+- -t 收集并显示每个步骤的时间信息及占用百分比，可选参数；
+- -d 指定数据库名称，若不指定，默认为用户名；
+- -U 指定用户名，若不指定，默认为postgres；
+- -P 指定密码，必需参数；
+- -f 指定导入导出的文件名，若不指定，默认导出导入文件名为openGauss_backup.zip；
+- -o 指定不导入导出数据，只导出导入DDL，可选参数；
+- -s 指定导入导出的schema名称，多个schema以逗号分隔；
+- -n 指定导入的schema名称，若指定，需与-s参数指定的schema个数相同，多个schema以逗号分隔。
 
+JdbcGsBackup工具采用标准的zip文件格式，-f指定导入导出的文件名，具体的文件结构为：
 
-#### 特技
+```
+gs_backup/  
+gs_backup/schemas.sql  
+gs_backup/schemas/  
+gs_backup/schemas/<schema1>/  
+gs_backup/schemas/<schema1>/indexes.sql  
+gs_backup/schemas/<schema1>/views.sql  
+gs_backup/schemas/<schema1>/constraints.sql  
+gs_backup/schemas/<schema1>/sequences.sql  
+gs_backup/schemas/<schema1>/tables.sql  
+gs_backup/schemas/<schema1>/tables/  
+gs_backup/schemas/<schema1>/tables/<table1>  
+gs_backup/schemas/<schema1>/tables/<table2>  
+...  
+gs_backup/schemas/<schema2>/  
+...  
+```
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+其中xxx.sql文件即为对应的SQL语句，tables/<table_name>即为对应表table_name的数据，其以二进制格式存储。
+
+#### 源码分析
+
+- dump功能：根据系统表查询相应的数据库对象，包括schema下的表、视图、序列、约束、索引，根据查询结果集构造相应的DDL语句，并写入到指定的文件中；对于表数据的导出，调用了JDBC中CopyManager的copyOut函数。
+- restore功能：按照指定的文件，依次读取xxx.sql文件，按照分号；分隔不同的SQL语句并执行，即可完成数据库对象的导入操作；对于表数据的导入，调用了JDBC中CopyManager的copyIn函数。
+
