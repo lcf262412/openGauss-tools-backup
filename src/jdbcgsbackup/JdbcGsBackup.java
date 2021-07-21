@@ -12,7 +12,7 @@ import java.util.Map;
 public final class JdbcGsBackup {
 
     public static final String USAGE =
-            "Usage: JdbcPgBackup -m dump|restore [-h hostname] [-p port] [-t (timing)] " +
+            "Usage: JdbcGsBackup -m dump|restore [-h hostname] [-p port] [-t (timing)] " +
                     "[-d database] [-U user] [-P password] [-f filename] [-o (schema only)] " +
                     "[-s schema[,schema...]] [-n schema[,schema...]] [-b batchsize]";
 
