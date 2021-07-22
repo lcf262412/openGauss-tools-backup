@@ -29,7 +29,7 @@ final class Schema extends DbBackupObject {
                 stmt = con.prepareStatement(
                         "SELECT nspname, pg_get_userbyid(nspowner) AS owner, oid FROM pg_namespace " +
                                 "WHERE nspname NOT LIKE 'pg_%' " +
-                        "AND nspname <> 'information_schema'");
+                        "AND nspname <> 'information_schema' AND nspname <> 'cstore'");
                 ResultSet rs = stmt.executeQuery();
                 while (rs.next()) {
                     schemas.add(new Schema(rs.getString("nspname"), rs.getString("owner"), rs.getInt("oid")));
@@ -106,7 +106,7 @@ final class Schema extends DbBackupObject {
                 stmt = con.prepareStatement(
                         "SELECT nspname AS schemaname, pg_get_userbyid(nspowner) AS owner, oid FROM pg_namespace " +
                                 "WHERE nspname NOT LIKE 'pg_%' " +
-                        "AND nspname <> 'information_schema'");
+                        "AND nspname <> 'information_schema' AND nspname <> 'cstore'");
                 ResultSet rs = stmt.executeQuery();
                 while (rs.next()) {
                     String schemaName = rs.getString("schemaname");

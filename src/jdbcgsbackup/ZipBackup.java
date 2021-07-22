@@ -38,6 +38,7 @@ public final class ZipBackup {
 
     private final String jdbcUrl;
     private final File file;
+    private String owner;
 
     private DBOFactory<Schema> schemaFactory = new Schema.SchemaFactory();
     private DBOFactory<View> viewFactory = new View.ViewFactory();
@@ -54,6 +55,25 @@ public final class ZipBackup {
     public ZipBackup(Map<String,String> params) {
         this(params.get("filename") == null ? new File(defaultDumpFileName) : new File(params.get("filename")),
                 buildJdbcUrl(params));
+        this.owner = params.get("user");
+    }
+
+    /**
+     * Sets the owner
+     *
+     * @param String the owner
+     */
+    public void setOwner(String owner) {
+        this.owner = owner;
+    }
+
+    /**
+     * Gets the owner
+     *
+     * @return String the owner
+     */
+    public String getOwner() {
+        return owner;
     }
 
     public void dumpAll(DataFilter dataFilter) {
@@ -259,9 +279,9 @@ public final class ZipBackup {
         Connection con = null;
         try {
             con = DriverManager.getConnection(jdbcUrl);
-//            con.setAutoCommit(false);
+            con.setAutoCommit(false);
             restoreSchemaTo(schema, toSchema, con);
-//            con.commit();
+            con.commit();
         } catch (Exception e) {
             try {
                 if (con != null) con.rollback();
@@ -278,7 +298,7 @@ public final class ZipBackup {
         ZipFile zipFile = null;
         try {
             zipFile = new ZipFile(file);
-            restoreSchema(schema, toSchema, toSchema, zipFile, con);
+            restoreSchema(schema, toSchema, zipFile, con);
             printTimings();
         } catch (IOException e) {
             throw new RuntimeException(e.getMessage(), e);
@@ -299,14 +319,13 @@ public final class ZipBackup {
             zipFile = new ZipFile(file);
 
             timerStart("schemas");
-            restoreSchemasSql(zipFile, con);
             List<String> schemas = schemasInBackup();
             setTotalCount(schemas.size());
             timerEnd("schemas");
 
             int count = 0;
             for (String schemaName : schemas) {
-                restoreSchema(schemaName, schemaName, schemaName, zipFile, con);
+                restoreSchema(schemaName, schemaName, zipFile, con);
                 if (++count%100 == 1) con.commit(); // commit every 100 schemas
             }
 
@@ -328,15 +347,13 @@ public final class ZipBackup {
         debug("finished full restore at " + new Date());
     }
 
-    private void restoreSchema(String fromSchemaName, String toSchemaName, String toOwner, ZipFile zipFile, Connection con) {
+    private void restoreSchema(String fromSchemaName, String toSchemaName, ZipFile zipFile, Connection con) {
         try {
             timerStart("schemas");
             boolean isNewSchema = !toSchemaName.equals(fromSchemaName);
             Schema toSchema = schemaFactory.getDbBackupObject(con, toSchemaName, null);
             if (toSchema == null) 
-                toSchema = Schema.createSchema(con, toSchemaName, toOwner, schemaFactory);
-            else
-                toOwner = "tpcc";
+                toSchema = Schema.createSchema(con, toSchemaName, getOwner(), schemaFactory);
             setSearchPath(con, toSchema);
             timerEnd("schemas");
 
@@ -386,17 +403,6 @@ public final class ZipBackup {
                     "error restoring " + fromSchemaName + 
                     " to " + toSchemaName, e
                     );
-        }
-    }
-
-    private void restoreSchemasSql(ZipFile zipFile, Connection con) {
-        try {
-            ZipEntry schemasSql = zipFile.getEntry(zipRoot + "schemas.sql");
-            if (schemasSql!=null) execSqlZipEntry(zipFile, con, schemasSql, false);
-        } catch (SQLException e) {
-            throw new RuntimeException(e.getMessage(), e);
-        } catch (IOException e) {
-            throw new RuntimeException(e.getMessage(), e);
         }
     }
 
