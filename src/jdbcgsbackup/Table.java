@@ -21,12 +21,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;
 import org.postgresql.core.BaseConnection;
 
 final class Table extends DbBackupObject {
+    private static final String SEPARATOR = System.lineSeparator();
     /*
      * {orientation=row,compression=no}
      */
@@ -106,7 +109,7 @@ final class Table extends DbBackupObject {
                     if (!"n".equals(rs.getString("table_parttype"))) {
                         table.setIsPartitionTable(true);
                         table.setPartitionType(rs.getString("table_parttype"));
-                        String partition = loadPartitions(con, table, rs.getInt("table_oid"), rs.getString("table_parttype"));
+                        String partition = loadPartitions(con, table, rs.getInt("table_oid"));
                         table.setPartitionContent(partition);
                     }
                     tables.add(table);
@@ -172,16 +175,31 @@ final class Table extends DbBackupObject {
                 if (stmt != null) stmt.close();
             }
         }
-        
-        public static String loadPartitions(Connection con, Table table, int tableOid, String partType) throws SQLException {
-            StringBuffer buf = new StringBuffer();
-            if (partType.equals("p")) {
-                buf.append("\r\nPARTITION BY RANGE(");
-            } else if (partType.equals("v")) {
-                buf.append("\r\nPARTITION BY VALUES(");
-            } else {
-                buf.append("");
+
+        private static String getPartitionStrategy (Connection con, Table table) {
+            String query = "select p.relname, p.parttype, p.parentid, p.partstrategy from pg_partition p where p.relname = ?";
+            String tableStrategy = "";
+            try {
+                PreparedStatement ps = con.prepareStatement(query);
+                ps.setString(1, table.getName());
+                ResultSet resultSet = ps.executeQuery();
+                while (resultSet.next()) {
+                    tableStrategy = resultSet.getString("partstrategy");
+                }
+            } catch (SQLException exp) {
+                exp.printStackTrace();
             }
+            return tableStrategy;
+        }
+
+        public static String loadPartitions(Connection con, Table table, int tableOid) throws SQLException {
+            StringBuilder buf = new StringBuilder();
+            String partStrategy = getPartitionStrategy(con, table);
+            if (PartitionTypeEnum.BY_INTERVAL.getTypeCode().equals(partStrategy)) {
+                partStrategy = PartitionTypeEnum.BY_RANGE.getTypeCode();
+            }
+            String partitionType = PartitionTypeEnum.getTypeName(partStrategy);
+            buf.append(SEPARATOR + "PARTITION " + partitionType + "(");
             List <Column> list = new ArrayList<Column>(table.columns);
             PreparedStatement stmt = null;
             String query = "SELECT array_length(partkey, 1) AS partkeynum, "
@@ -208,49 +226,81 @@ final class Table extends DbBackupObject {
                         buf.append(list.get(columnIndex - 1).name);
                     }
                 }
-                buf.append(")\r\n");
-                if (!partType.equals("v")) {
-                    buf.append("(");
+                buf.append(")" + SEPARATOR);
+                if (!PartitionTypeEnum.BY_VALUES.getTypeCode().equals(partStrategy)) {
                     buf.append(buildPartitionRangeNumber(con, table, tableOid, size, partkey));
-                    buf.append("\r\n)");
-                    buf.append("\r\nENABLE ROW MOVEMENT");
+                    buf.append(SEPARATOR + ")");
+                    if (!(isListOrHashPartition(partStrategy))) {
+                        buf.append(SEPARATOR + "ENABLE ROW MOVEMENT");
+                    }
                 }
             } catch (SQLException e) {
                 e.printStackTrace();
             }
             return buf.toString();
-            
-            
         }
-        
+
+        private static boolean isListOrHashPartition(String partStrategy) {
+            return PartitionTypeEnum.BY_LIST.getTypeCode().equals(partStrategy) ||
+                    PartitionTypeEnum.BY_HASH.getTypeCode().equals(partStrategy);
+        }
+
+        private static StringBuilder buildIntervalPartition(ResultSet rs) {
+            StringBuilder sb = new StringBuilder();
+            try {
+                if (rs.getString("interval") != null) {
+                    sb.append("INTERVAL('" + rs.getString("interval") + "')" + SEPARATOR);
+                }
+                sb.append("(");
+            } catch (SQLException exp) {
+                exp.printStackTrace();
+            }
+            return sb;
+        }
+
         private static String buildPartitionRangeNumber(Connection con, Table table, int tableOid, int size, List<Integer> partkey) {
             StringBuilder query = new StringBuilder();
-            query.append("SELECT p.relname AS partName, ");
+            String partStrategy = getPartitionStrategy(con, table);
+            query.append("SELECT q.interval[1] AS interval, /*+ hashjoin(p t) */p.relname AS partName, ");
             String partBoundaryTitle = "partBoundary_";
-            for(int i = 1; i <= size; i++) {
-                query.append(String.format("p.boundaries[%d] AS %s%d, ", i, partBoundaryTitle, i));
-            }
-            String subQuery = "t.spcname AS reltblspc "
-                    + "FROM pg_partition p LEFT JOIN pg_tablespace t "
-                    + "ON p.reltablespace = t.oid "
-                    + "WHERE p.parentid = %d AND p.parttype = '%s' "
-                    + "AND p.partstrategy = '%s' ORDER BY ";
-            query.append(String.format(subQuery, tableOid, "p", "r"));
-            for(int i = 1; i <= size; i++) {
-                List<Column> list = new ArrayList<Column>(table.columns);
-                String curAttTypeName = list.get(partkey.get(i - 1) - 1).typeName;
-                if (i == size) {
-                    query.append(String.format("p.boundaries[%d]::%s ASC", i, curAttTypeName));
-                } else {
-                    query.append(String.format("p.boundaries[%d]::%s, ", i, curAttTypeName));
+            if ("r".equals(partStrategy)) {
+                for(int i = 1; i <= size; i++) {
+                    query.append(String.format("p.boundaries[%d] AS %s%d, ", i, partBoundaryTitle, i));
                 }
+            } else {
+                query.append("array_to_string(p.boundaries, ',') AS partBoundary_1, ");
+            }
+            String subQuery = "t.spcname AS reltblspc from pg_partition q "
+                    + "left join pg_partition p on q.parentid = p.parentid "
+                    + "left join pg_tablespace t on p.reltablespace = t.oid "
+                    + "where p.parentid = ? AND p.partstrategy = ? "
+                    + "and p.parttype = 'p' and q.parttype = 'r' order by ";
+            if (PartitionTypeEnum.BY_INTERVAL.getTypeCode().equals(partStrategy)) {
+                partStrategy = PartitionTypeEnum.BY_RANGE.getTypeCode();
+            }
+            query.append(subQuery);
+            if ("r".equals(partStrategy)) {
+                for(int i = 1; i <= size; i++) {
+                    List<Column> list = new ArrayList<Column>(table.columns);
+                    String curAttTypeName = list.get(partkey.get(i - 1) - 1).typeName;
+                    query.append(String.format("p.boundaries[%d]::%s%s", i,curAttTypeName, i == size ? " ASC" : "" ));
+                }
+            } else {
+                query.append("p.boundaries ASC");
             }
             StringBuilder sb = new StringBuilder();
             try {
                 PreparedStatement ps = con.prepareStatement(query.toString());
+                ps.setInt(1, tableOid);
+                ps.setString(2, partStrategy);
                 ResultSet rs = ps.executeQuery();
+                boolean isInterval = false;
                 while(rs.next()) {
-                    sb.append(buildPartitionRangeNumberOne(rs, size, partBoundaryTitle));
+                    if (!isInterval) {
+                        sb.append(buildIntervalPartition(rs));
+                        isInterval = true;
+                    }
+                    sb.append(buildPartitionRangeNumberOne(rs, size, partBoundaryTitle, partStrategy));
                 }
                 sb.deleteCharAt(sb.length()-1);
             } catch (SQLException e) {
@@ -258,19 +308,20 @@ final class Table extends DbBackupObject {
             }
             return sb.toString();
         }
-        
-        private static StringBuilder buildPartitionRangeNumberOne(ResultSet rs, int size, String partBoundaryTitle) {
+
+        private static StringBuilder buildPartitionRangeNumberOne(ResultSet rs, int size,
+                String partBoundaryTitle, String partStrategy) {
             StringBuilder sb = new StringBuilder();
             String partName = null;
             String relTableSpace = null;
-            List<Integer> results = new ArrayList<>();
+            List<String> results = new ArrayList<>();
             try {
                 partName = rs.getString("partName");
                 if (rs.wasNull()) {
                     partName = null;
                 }
                 for(int i = 1; i <= size; i++) {
-                    Integer tmpV = Integer.parseInt(rs.getString(partBoundaryTitle + i));
+                    String tmpV = rs.getString(partBoundaryTitle + i);
                     if(rs.wasNull()) {
                         tmpV = null;
                     }
@@ -280,26 +331,40 @@ final class Table extends DbBackupObject {
                 if(rs.wasNull()) {
                     relTableSpace = "pg_default";
                 }
-                sb.append("\r\n");
-                sb.append("PARTITION " + partName + " VALUES LESS THAN (");
-                for(int i = 0; i < size; i++) {
-                    Integer tmpV = results.get(i);
-                    if (i > 0) {
-                        sb.append(", ");
+                sb.append(SEPARATOR);
+                sb.append("PARTITION " + partName);
+                sb.append(PartitionTypeEnum.getSqlString(partStrategy));
+                if (!PartitionTypeEnum.BY_HASH.getTypeCode().equals(partStrategy)) {
+                    for(int i = 0; i < size; i++) {
+                        String tmpV = results.get(i);
+                        if (i > 0) {
+                            sb.append(", ");
+                        }
+                        if (tmpV == null) {
+                            sb.append("MAXVALUE");
+                        } else if (isNumeric(tmpV)){
+                            sb.append(tmpV);
+                        } else {
+                            sb.append("'" + tmpV + "'");
+                        }
                     }
-                    if (tmpV == null) {
-                        sb.append("MAXVALUE");
-                    } else {
-                        sb.append(tmpV);
-                    }
+                    sb.append(")");
                 }
-                sb.append(")");
                 sb.append(" TABLESPACE " + relTableSpace);
                 sb.append(",");
             } catch(SQLException e) {
                 e.printStackTrace();
             }
             return sb;
+        }
+
+        private static boolean isNumeric(String str) {
+            Pattern pattern = Pattern.compile("-?[0-9]+(\\.[0-9]+)?");
+            Matcher isNum = pattern.matcher(str);
+            if (!isNum.matches()) {
+                return false;
+            }
+            return true;
         }
     }
 
@@ -360,8 +425,10 @@ final class Table extends DbBackupObject {
                     Table table = oidMap.get(oid);
                     if (table != null) {
                         table.columns.add(table.new Column((BaseConnection)con, rs));
-                        if (++count%100000 == 1) ZipBackup.debug("loaded " + count + " columns");
-                        String query = "select c.oid as table_oid, c.relname as tablename, c.parttype as table_parttype, " + 
+                        count++;
+                        if (count % 100000 == 1) ZipBackup.debug("loaded " + count + " columns");
+                        String query = "select c.oid as table_oid, c.relname as tablename, c.parttype as table_parttype, " +
+                                "c.partstrategy as table_strategy, " +
                                 "c.relpersistence as table_type, c.reloptions as options from pg_class c where c.oid = ?";
                         PreparedStatement stmt1 = con.prepareStatement(query);
                         stmt1.setInt(1, oid);
@@ -378,9 +445,9 @@ final class Table extends DbBackupObject {
                             if (!"n".equals(rs1.getString("table_parttype"))) {
                                 table.setIsPartitionTable(true);
                                 table.setPartitionType(rs1.getString("table_parttype"));
-                                String partition = Table.TableFactory.loadPartitions(con, table, rs1.getInt("table_oid"), rs1.getString("table_parttype"));
+                                String partition = Table.TableFactory.loadPartitions(con, table, rs1.getInt("table_oid"));
                                 table.setPartitionContent(partition);
-                            }        
+                            }
                         }
                     }
                 }
@@ -391,27 +458,12 @@ final class Table extends DbBackupObject {
             ZipBackup.debug("end loading columns");
             ZipBackup.timerEnd("load columns");        
         }
-        
-        private void loadPartition() throws SQLException {
-            ZipBackup.timerStart("load partitions");
-            ZipBackup.debug("begin loading partitions...");
-            ZipBackup.debug("end loading partitions");
-            ZipBackup.timerEnd("load partitions");    
-        }
-
     }
 
     public final Set<Column> columns = new TreeSet<Column>(
             new Comparator<Column>() { 
                 public int compare(Column a, Column b) {
                     return a.position - b.position;
-                };
-            });
-    
-    private final Set<Partition> partitions = new TreeSet<Partition>(
-            new Comparator<Partition>() { 
-                public int compare(Partition a, Partition b) {
-                    return a.partitionValue - b.partitionValue;
                 };
             });
 
@@ -427,13 +479,13 @@ final class Table extends DbBackupObject {
         buf.append(getName());
         buf.append(" (");
         for (Column column : columns) {
-            buf.append("\r\n");
+            buf.append(SEPARATOR);
             column.appendSql(buf);
             buf.append(",");
         }
         buf.deleteCharAt(buf.length()-1);
-        buf.append("\r\n");
-        buf.append(")\r\n");
+        buf.append(SEPARATOR);
+        buf.append(")" + SEPARATOR);
         buf.append("WITH " + getOptions());
         if (isPartitionTable) {
             buf.append(getPartitionContent());
@@ -548,42 +600,6 @@ final class Table extends DbBackupObject {
             buf.append(".").append(name);
             buf.append(" ;\n");
             return buf;
-        }
-
-    }
-
-    private class Partition {
-        private final String partitionName;
-        private final int partitionValue;
-        private final String partitionTableSpace = "pg_default";
-        
-        private Partition(BaseConnection con, ResultSet rs) throws SQLException {
-            partitionName = rs.getString("partitionName");
-            partitionValue = rs.getInt("partitionValue");
-        }
-        
-        private StringBuilder appendPartitionSql(StringBuilder buf) {
-            String partType = getPartitionType();
-            if (partType.equals("p")) {
-                buf.append("PARTITION BY RANGE(");
-            } else if (partType.equals("v")) {
-                buf.append("PARTITION BY VALUES(");
-            } else {
-                return buf;
-            }
-            return buf;
-        }
-
-    }
-
-    private enum PartType {
-        PARTTYPE_PARTITIONED_RELATION("p"),
-        PARTTYPE_VALUE_PARTITIONED_RELATION("v"),
-        PARTTYPE_NON_PARTITIONED_RELATION("n"),
-        UNKNOWN("");
-        public final String partType;
-        PartType(String partType) {
-            this.partType = partType;
         }
     }
 }
