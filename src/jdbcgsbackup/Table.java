@@ -30,6 +30,9 @@ import org.postgresql.core.BaseConnection;
 
 final class Table extends DbBackupObject {
     private static final String SEPARATOR = System.lineSeparator();
+    private static final String UNLOGGED_TABLE = "u";
+    private static final String GLOBAL_TEMP_TABLE = "g";
+    private static final String NO_PARTITION = "n";
     /*
      * {orientation=row,compression=no}
      */
@@ -97,21 +100,9 @@ final class Table extends DbBackupObject {
                 ResultSet rs = stmt.executeQuery();
                 while (rs.next()) {
                     Table table = new Table(rs.getString("tablename"), schema, rs.getString("tableowner"));
-                    String tableType = rs.getString("table_type");
-                    if ("u".equals(tableType)) {
-                        table.setTableType("UNLOGGED ");
-                    } else if ("g".equals(tableType)) {
-                        table.setTableType("GLOBAL TEMPORARY ");
-                    }
-                    String options = rs.getString("options");
-                    table.setOptions("(" + options.substring(1, options.length() - 1) + ")");
+                    setTableType(rs, table);
                     loadColumns(con, table, rs.getInt("table_oid"));
-                    if (!"n".equals(rs.getString("table_parttype"))) {
-                        table.setIsPartitionTable(true);
-                        table.setPartitionType(rs.getString("table_parttype"));
-                        String partition = loadPartitions(con, table, rs.getInt("table_oid"));
-                        table.setPartitionContent(partition);
-                    }
+                    setTablePartitionInfo(con, rs, table);
                     tables.add(table);
                 }
                 rs.close();
@@ -263,7 +254,7 @@ final class Table extends DbBackupObject {
             String partStrategy = getPartitionStrategy(con, table);
             query.append("SELECT q.interval[1] AS interval, /*+ hashjoin(p t) */p.relname AS partName, ");
             String partBoundaryTitle = "partBoundary_";
-            if ("r".equals(partStrategy)) {
+            if (PartitionTypeEnum.BY_RANGE.getTypeCode().equals(partStrategy)) {
                 for(int i = 1; i <= size; i++) {
                     query.append(String.format("p.boundaries[%d] AS %s%d, ", i, partBoundaryTitle, i));
                 }
@@ -279,7 +270,7 @@ final class Table extends DbBackupObject {
                 partStrategy = PartitionTypeEnum.BY_RANGE.getTypeCode();
             }
             query.append(subQuery);
-            if ("r".equals(partStrategy)) {
+            if (PartitionTypeEnum.BY_RANGE.getTypeCode().equals(partStrategy)) {
                 for(int i = 1; i <= size; i++) {
                     List<Column> list = new ArrayList<Column>(table.columns);
                     String curAttTypeName = list.get(partkey.get(i - 1) - 1).typeName;
@@ -360,9 +351,12 @@ final class Table extends DbBackupObject {
 
         private static boolean isNumeric(String str) {
             Pattern pattern = Pattern.compile("-?[0-9]+(\\.[0-9]+)?");
-            Matcher isNum = pattern.matcher(str);
-            if (!isNum.matches()) {
-                return false;
+            String[] numArray = str.split(",");
+            for(int i = 0; i < numArray.length; i++) {
+                Matcher isNum = pattern.matcher(numArray[i]);
+                if (!isNum.matches()) {
+                    return false;
+                }
             }
             return true;
         }
@@ -411,12 +405,12 @@ final class Table extends DbBackupObject {
             try {
                 stmt = con.prepareStatement(
                         "SELECT a.attrelid AS table_oid, a.attname, a.atttypid," +
-                                "a.attnotnull OR (t.typtype = 'd' AND t.typnotnull) AS attnotnull, a.atttypmod, " +
-                                "row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS attnum, " +
-                                "pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS adsrc, t.typtype " +
-                                "FROM pg_catalog.pg_attribute a " +
-                                "JOIN pg_catalog.pg_type t ON (a.atttypid = t.oid) " +
-                                "LEFT JOIN pg_catalog.pg_attrdef def ON (a.attrelid=def.adrelid AND a.attnum = def.adnum) " +
+                        "a.attnotnull OR (t.typtype = 'd' AND t.typnotnull) AS attnotnull, a.atttypmod, " +
+                        "row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS attnum, " +
+                        "pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS adsrc, t.typtype " +
+                        "FROM pg_catalog.pg_attribute a " +
+                        "JOIN pg_catalog.pg_type t ON (a.atttypid = t.oid) " +
+                        "LEFT JOIN pg_catalog.pg_attrdef def ON (a.attrelid=def.adrelid AND a.attnum = def.adnum) " +
                         "WHERE a.attnum > 0 AND NOT a.attisdropped ");
                 int count = 0;
                 ResultSet rs = stmt.executeQuery();
@@ -427,28 +421,18 @@ final class Table extends DbBackupObject {
                         table.columns.add(table.new Column((BaseConnection)con, rs));
                         count++;
                         if (count % 100000 == 1) ZipBackup.debug("loaded " + count + " columns");
-                        String query = "select c.oid as table_oid, c.relname as tablename, c.parttype as table_parttype, " +
-                                "c.partstrategy as table_strategy, " +
-                                "c.relpersistence as table_type, c.reloptions as options from pg_class c where c.oid = ?";
-                        PreparedStatement stmt1 = con.prepareStatement(query);
-                        stmt1.setInt(1, oid);
-                        ResultSet rs1 = stmt1.executeQuery();
-                        while(rs1.next()) {
-                            String tableType = rs1.getString("table_type");
-                            if ("u".equals(tableType)) {
-                                table.setTableType("UNLOGGED ");
-                            } else if ("g".equals(tableType)) {
-                                table.setTableType("GLOBAL TEMPORARY ");
-                            }
-                            String options = rs1.getString("options");
-                            table.setOptions("(" + options.substring(1, options.length() - 1) + ")");
-                            if (!"n".equals(rs1.getString("table_parttype"))) {
-                                table.setIsPartitionTable(true);
-                                table.setPartitionType(rs1.getString("table_parttype"));
-                                String partition = Table.TableFactory.loadPartitions(con, table, rs1.getInt("table_oid"));
-                                table.setPartitionContent(partition);
-                            }
-                        }
+                    }
+                }
+                String tableQuery = "select c.oid as table_oid, c.relname as tablename, c.parttype as table_parttype, " +
+                      "c.relpersistence as table_type, c.reloptions as options from pg_class c where c.oid = ?";
+                PreparedStatement ps = con.prepareStatement(tableQuery);
+                for (int oid : oidMap.keySet()) {
+                    ps.setInt(1, oid);
+                    ResultSet resultSet = ps.executeQuery();
+                    Table table = oidMap.get(oid);
+                    while(resultSet.next()) {
+                        setTableType(resultSet, table);
+                        setTablePartitionInfo(con, resultSet, table);
                     }
                 }
                 rs.close();
@@ -457,6 +441,34 @@ final class Table extends DbBackupObject {
             }
             ZipBackup.debug("end loading columns");
             ZipBackup.timerEnd("load columns");        
+        }
+    }
+
+    private static void setTableType(ResultSet rs, Table table) {
+        try  {
+            String tableType = rs.getString("table_type");
+            if (UNLOGGED_TABLE.equals(tableType)) {
+                table.setTableType("UNLOGGED ");
+            } else if (GLOBAL_TEMP_TABLE.equals(tableType)) {
+                table.setTableType("GLOBAL TEMPORARY ");
+            }
+            String options = rs.getString("options");
+            table.setOptions("(" + options.substring(1, options.length() - 1) + ")");
+        } catch (SQLException exp) {
+            exp.printStackTrace();
+        }
+    }
+
+    private static void setTablePartitionInfo(Connection con, ResultSet rs, Table table) {
+        try {
+            if (!NO_PARTITION.equals(rs.getString("table_parttype"))) {
+                table.setIsPartitionTable(true);
+                table.setPartitionType(rs.getString("table_parttype"));
+                String partition = Table.TableFactory.loadPartitions(con, table, rs.getInt("table_oid"));
+                table.setPartitionContent(partition);
+            }
+        } catch (SQLException exp) {
+            exp.printStackTrace();
         }
     }
 
