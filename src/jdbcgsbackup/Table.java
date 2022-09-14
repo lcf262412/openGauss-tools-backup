@@ -170,12 +170,12 @@ final class Table extends DbBackupObject {
         private static String getPartitionStrategy (Connection con, Table table) {
             String query = "select p.relname, p.parttype, p.parentid, p.partstrategy from pg_partition p where p.relname = ?";
             String tableStrategy = "";
-            try {
-                PreparedStatement ps = con.prepareStatement(query);
+            try (PreparedStatement ps = con.prepareStatement(query)) {
                 ps.setString(1, table.getName());
-                ResultSet resultSet = ps.executeQuery();
-                while (resultSet.next()) {
-                    tableStrategy = resultSet.getString("partstrategy");
+                try (ResultSet resultSet = ps.executeQuery()) {
+                    while (resultSet.next()) {
+                        tableStrategy = resultSet.getString("partstrategy");
+                    }
                 }
             } catch (SQLException exp) {
                 exp.printStackTrace();
