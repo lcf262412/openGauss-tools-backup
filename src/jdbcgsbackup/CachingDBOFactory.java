@@ -35,6 +35,9 @@ public abstract class CachingDBOFactory<T extends DbBackupObject> implements DBO
 
     @Override
     public T getDbBackupObject(Connection con, String name, Schema schema) throws SQLException {
+        if (schema == null) {
+            return null;
+        }
         if (map == null) {
             loadMap(con);
         }

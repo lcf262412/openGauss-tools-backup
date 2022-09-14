@@ -429,7 +429,7 @@ public final class ZipBackup {
                 try {
                     stmt = con.prepareStatement(query);
                     if (query.startsWith("SELECT ")) {
-                        stmt.executeQuery();
+                        System.out.println("It's a query sql and we just ignore it.");
                     } else {
                         stmt.executeUpdate();
                     }
